@@ -2,10 +2,10 @@ import type { Request, Response } from 'express';
 import pool from '../database/index.js';
 import bcrypt from 'bcrypt';
 import type { QueryResult, PoolClient } from 'pg';
-import jwt from 'jsonwebtoken';
-import type { SignOptions, JwtPayload } from 'jsonwebtoken';
+import type { JwtPayload } from 'jsonwebtoken';
 import authConfig from '../config/authConfig.js';
-import jwtConfig from '../config/jwtConfig.js';
+import tokenService from '../services/TokenService.js';
+
 //UTILITY FUNCTIONS
 
 /*
@@ -42,37 +42,6 @@ const authenticateUser = async (username: string, password: string): Promise<num
     console.error('Database error in authenticateUser:', error);
     return null; // Return null in case of an error
   }
-};
-
-const generateAndStoreRefreshToken = async (
-  userId: number,
-  client: PoolClient
-): Promise<string> => {
-  const payload = {
-    sub: userId,
-  };
-  const secret: string = process.env['REFRESH_TOKEN_SECRET']!;
-  const options: SignOptions = { expiresIn: jwtConfig.refreshTokenExpiresIn };
-  const refreshToken = jwt.sign(payload, secret, options);
-
-  const refreshTokenHash: string = await bcrypt.hash(refreshToken, authConfig.bcrypt.saltRounds);
-  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days from now
-
-  await client.query(
-    'INSERT INTO refresh_tokens(user_id, token_hash, expires_at) VALUES ($1, $2, $3)',
-    [userId, refreshTokenHash, expiresAt]
-  );
-
-  return refreshToken;
-};
-
-const generateAccessToken = (userId: number): string => {
-  const payload = {
-    sub: userId,
-  };
-  const secret: string = process.env['ACCESS_TOKEN_SECRET']!;
-  const options: SignOptions = { expiresIn: '15m' };
-  return jwt.sign(payload, secret, options);
 };
 
 /*
@@ -130,8 +99,8 @@ async function handleRegistration(req: Request, res: Response): Promise<void> {
 
     const userId: number = insertResult.rows[0].id;
 
-    const accessToken = generateAccessToken(userId);
-    const refreshToken = await generateAndStoreRefreshToken(userId!, client);
+    const accessToken = tokenService.createAccessToken(userId);
+    const refreshToken = await tokenService.createRefreshToken(userId, client);
     setRefreshTokenCookie(res, refreshToken);
 
     await client.query('COMMIT');
@@ -172,14 +141,14 @@ async function handleLogin(req: Request, res: Response): Promise<void> {
       // If the user is authenticated successfully
       await client.query('BEGIN');
 
-      const refreshToken = await generateAndStoreRefreshToken(userId!, client);
+      const refreshToken = await tokenService.createRefreshToken(userId, client);
       setRefreshTokenCookie(res, refreshToken); // Set the refresh token in a cookie
 
       await client.query('COMMIT');
 
       res.status(200).json({
         message: 'Login successful',
-        accessToken: generateAccessToken(userId),
+        accessToken: tokenService.createAccessToken(userId),
       });
       return;
     } else {
@@ -211,15 +180,15 @@ async function handleLogout(req: Request, res: Response): Promise<void> {
 
     res.clearCookie('refreshToken', {
       // Clear the refresh token cookie
-      httpOnly: true,
-      secure: process.env['NODE_ENV'] === 'production',
-      sameSite: 'strict',
+      httpOnly: authConfig.cookies.httpOnly,
+      secure: authConfig.cookies.secure,
+      sameSite: authConfig.cookies.sameSite,
     });
 
-    let payload: JwtPayload | null = null;
+    let payload: JwtPayload;
     try {
       // Verify token signature and expiry
-      payload = jwt.verify(refreshToken, process.env['REFRESH_TOKEN_SECRET']!) as JwtPayload;
+      payload = tokenService.verifyRefreshToken(refreshToken);
     } catch {
       res.status(200).json({
         message: 'Logout successful (invalid or expired refresh token).',
@@ -233,17 +202,18 @@ async function handleLogout(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    const userSessions: QueryResult<{ id: number; token_hash: string }> = await pool.query(
-      'SELECT id, token_hash FROM refresh_tokens WHERE user_id = $1',
-      [userId]
-    );
-
-    for (const row of userSessions.rows) {
-      const isMatch = await bcrypt.compare(refreshToken, row.token_hash);
-      if (isMatch) {
-        await pool.query('DELETE FROM refresh_tokens WHERE id = $1', [row.id]);
-        break;
-      }
+    let client: PoolClient | null = null;
+    try {
+      client = await pool.connect();
+      await client.query('BEGIN');
+      await tokenService.revokeSpecificRefreshToken(refreshToken, client);
+      await client.query('COMMIT');
+    } catch (error) {
+      await client?.query('ROLLBACK');
+      console.error('Error during logout token revocation:', error);
+      // Still return success since cookie is cleared
+    } finally {
+      client?.release();
     }
 
     res.status(200).json({ message: 'Logout successful' });
@@ -269,59 +239,29 @@ async function handleExpiredAccessToken(req: Request, res: Response): Promise<vo
 
   try {
     client = await pool.connect();
-    let payload: JwtPayload | null = null;
+    let payload: JwtPayload;
     try {
-      // Verify token signature and expiry first.
-      payload = jwt.verify(refreshToken, process.env['REFRESH_TOKEN_SECRET']!) as JwtPayload;
+      payload = tokenService.verifyRefreshToken(refreshToken);
     } catch {
       res.status(403).json({ error: 'Invalid or expired refresh token.' });
       return;
     }
 
     const userId = parseInt(payload.sub as string, 10);
-    if (isNaN(userId)) {
-      res.status(403).json({ error: 'Invalid refresh token payload.' });
-      return;
-    }
-
     await client.query('BEGIN');
-
-    const userSessions: QueryResult<{ id: number; token_hash: string }> = await client.query(
-      'SELECT id, token_hash FROM refresh_tokens WHERE user_id = $1',
-      [userId]
-    );
-
-    let potentialBreach: boolean = true;
-
-    for (const row of userSessions.rows) {
-      const isMatch = await bcrypt.compare(refreshToken, row.token_hash);
-      if (isMatch) {
-        potentialBreach = false;
-        await client.query('DELETE FROM refresh_tokens WHERE id = $1', [row.id]);
-        break;
-      }
-    }
-
-    if (potentialBreach) {
+    const tokenFound = await tokenService.revokeSpecificRefreshToken(refreshToken, client);
+    if (!tokenFound) {
       console.warn(
-        `SECURITY ALERT: Re-used or unknown refresh token detected for user ID: ${userId}. Invalidating all sessions.`
+        `SECURITY ALERT: Unknown refresh token detected for user ${userId}. Revoking all sessions.`
       );
-      try {
-        await client.query('DELETE FROM refresh_tokens WHERE user_id = $1', [userId]);
-        await client.query('COMMIT');
-      } catch (error) {
-        console.error(
-          'SECURITY ALERT: Database error while invalidating all sessions of a breached user:',
-          error
-        );
-      }
-
+      await tokenService.revokeUserRefreshTokens(userId, client);
+      await client.query('COMMIT');
       res.status(403).json({ error: 'Invalid refresh token.' });
       return;
     }
 
-    const newAccessToken = generateAccessToken(userId);
-    const newRefreshToken = await generateAndStoreRefreshToken(userId!, client);
+    const newAccessToken = tokenService.createAccessToken(userId);
+    const newRefreshToken = await tokenService.createRefreshToken(userId, client);
     setRefreshTokenCookie(res, newRefreshToken);
     await client.query('COMMIT');
 

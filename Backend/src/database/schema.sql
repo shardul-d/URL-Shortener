@@ -35,9 +35,8 @@ CREATE TABLE clicks(
 CREATE INDEX idx_clicks_on_url ON clicks(short_url, click_time);
 
 CREATE TABLE refresh_tokens (
-    id BIGSERIAL PRIMARY KEY,
+    jti VARCHAR(255) PRIMARY KEY,
     user_id BIGINT NOT NULL,
-    token_hash VARCHAR(255) NOT NULL UNIQUE,
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
     
     CONSTRAINT fk_user
