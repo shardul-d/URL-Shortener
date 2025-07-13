@@ -1,11 +1,12 @@
 import jwt from 'jsonwebtoken';
 import type { SignOptions, JwtPayload } from 'jsonwebtoken';
-import type { PoolClient } from 'pg';
-import { randomBytes } from 'crypto';
+import { Prisma } from '@prisma/client';
+import { randomUUID } from 'crypto';
 import jwtConfig from '../config/jwtConfig.js';
+
 class TokenService {
-  async createRefreshToken(userId: number, client: PoolClient): Promise<string> {
-    const jti = randomBytes(32).toString('hex');
+  async createRefreshToken(userId: number, tx: Prisma.TransactionClient): Promise<string> {
+    const jti = randomUUID();
     const payload = {
       sub: userId,
       jti: jti,
@@ -17,11 +18,13 @@ class TokenService {
 
     const expiresAt = new Date(Date.now() + jwtConfig.refreshTokenExpiresInMs); // 7 days from now
 
-    await client.query('INSERT INTO refresh_tokens(jti, user_id, expires_at) VALUES ($1, $2, $3)', [
-      jti,
-      userId,
-      expiresAt,
-    ]);
+    await tx.refresh_tokens.create({
+      data: {
+        jti: jti,
+        user_id: BigInt(userId),
+        expires_at: expiresAt,
+      },
+    });
 
     return refreshToken;
   }
@@ -35,30 +38,49 @@ class TokenService {
   }
 
   verifyAccessToken(accessToken: string): JwtPayload {
-    return jwt.verify(accessToken, jwtConfig.accessTokenSecret, jwtConfig.verifyOptions) as JwtPayload;
+    return jwt.verify(
+      accessToken,
+      jwtConfig.accessTokenSecret,
+      jwtConfig.verifyOptions
+    ) as JwtPayload;
   }
 
   verifyRefreshToken(refreshToken: string): JwtPayload {
-    return jwt.verify(refreshToken, jwtConfig.refreshTokenSecret, jwtConfig.verifyOptions) as JwtPayload;
+    return jwt.verify(
+      refreshToken,
+      jwtConfig.refreshTokenSecret,
+      jwtConfig.verifyOptions
+    ) as JwtPayload;
   }
 
   /**
    * Revokes all refresh tokens for a specific user
    */
-  async revokeUserRefreshTokens(userId: number, client: PoolClient): Promise<boolean> {
-    const result = await client.query('DELETE FROM refresh_tokens WHERE user_id = $1', [userId]);
-    return result.rowCount != null && result.rowCount > 0;
+  async revokeUserRefreshTokens(userId: number, tx: Prisma.TransactionClient): Promise<void> {
+    await tx.refresh_tokens.deleteMany({
+      where: { user_id: BigInt(userId) },
+    });
   }
 
-  async revokeSpecificRefreshToken(refreshToken: string, client: PoolClient): Promise<boolean> {
-    const payload = jwt.decode(refreshToken) as JwtPayload | null;
-
-    if (!payload || !payload.jti) return false;
-
+  async revokeSpecificRefreshToken(
+    refreshToken: string,
+    tx: Prisma.TransactionClient
+  ): Promise<boolean> {
+    const payload = jwt.verify(refreshToken, jwtConfig.refreshTokenSecret, {
+      ignoreExpiration: true,
+    }) as JwtPayload;
     const jti = payload.jti;
+    const userId: number = parseInt(payload.sub!, 10);
 
-    const result = await client.query('DELETE FROM refresh_tokens WHERE jti = $1', [jti]);
-    return result.rowCount != null && result.rowCount > 0;
+    // Delete the token by JTI and user_id for additional security
+    const result = await tx.refresh_tokens.deleteMany({
+      where: {
+        jti: jti,
+        user_id: BigInt(userId),
+      },
+    });
+
+    return result.count > 0;
   }
 }
 

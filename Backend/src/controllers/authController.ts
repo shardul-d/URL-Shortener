@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express';
-import pool from '../database/index.js';
+import { client } from '../server.js';
+import { Prisma } from '@prisma/client';
 import bcrypt from 'bcrypt';
-import type { QueryResult, PoolClient } from 'pg';
 import type { JwtPayload } from 'jsonwebtoken';
 import authConfig from '../config/authConfig.js';
 import tokenService from '../services/TokenService.js';
@@ -15,26 +15,18 @@ It returns the user ID if successful, or null if the user is not found or the pa
 */
 const authenticateUser = async (username: string, password: string): Promise<number | null> => {
   try {
-    interface UserRow {
-      id: number;
-      password_hash: string;
-    }
+    const user = await client.users.findUnique({
+      where: { username },
+      select: { id: true, password_hash: true },
+    });
 
-    const fetch_user_row: QueryResult<UserRow> = await pool.query(
-      'SELECT id, password_hash FROM users WHERE username = $1',
-      [username]
-    );
+    if (!user) return null;
 
-    if (fetch_user_row.rowCount === 0) {
-      return null; // User not found
-    }
-
-    const user = fetch_user_row.rows[0]!;
     const stored_password_hash = user.password_hash;
     const passwordMatch = await bcrypt.compare(password, stored_password_hash);
 
     if (passwordMatch) {
-      return user.id;
+      return Number(user.id);
     } else {
       return null; //Invalid password
     }
@@ -65,11 +57,7 @@ function: handleRegistration
 It checks that the username is unique, hashes the password, and adds the new user to the database.
 */
 async function handleRegistration(req: Request, res: Response): Promise<void> {
-  let client: PoolClient | null = null;
-
   try {
-    client = await pool.connect();
-
     const { username, password } = req.body;
 
     if (!username || !password) {
@@ -77,46 +65,41 @@ async function handleRegistration(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    await client.query('BEGIN');
+    const result = await client.$transaction(async (tx: Prisma.TransactionClient) => {
+      const existingUser = await tx.users.findUnique({
+        where: { username },
+        select: { id: true },
+      });
 
-    const existingUser: QueryResult<{ id: number }> = await client.query(
-      'SELECT id FROM users WHERE username = $1 FOR UPDATE',
-      [username]
-    );
+      if (existingUser) {
+        throw new Error('Username already exists.');
+      }
 
-    if (existingUser.rowCount && existingUser.rowCount > 0) {
-      await client.query('ROLLBACK');
-      res.status(409).json({ error: 'Username already exists.' });
-      return;
-    }
+      const hashed_password: string = await bcrypt.hash(password, authConfig.bcrypt.saltRounds);
 
-    const hashed_password: string = await bcrypt.hash(password, authConfig.bcrypt.saltRounds);
+      const newUser = await tx.users.create({
+        data: {
+          username,
+          password_hash: hashed_password,
+        },
+      });
 
-    const insertResult = await client.query(
-      'INSERT INTO users (username, password_hash) VALUES ($1, $2) RETURNING id',
-      [username, hashed_password]
-    );
+      const userId = Number(newUser.id);
+      const accessToken = tokenService.createAccessToken(userId);
+      const refreshToken = await tokenService.createRefreshToken(userId, tx);
 
-    const userId: number = insertResult.rows[0].id;
+      return { accessToken, refreshToken };
+    });
 
-    const accessToken = tokenService.createAccessToken(userId);
-    const refreshToken = await tokenService.createRefreshToken(userId, client);
-    setRefreshTokenCookie(res, refreshToken);
-
-    await client.query('COMMIT');
+    setRefreshTokenCookie(res, result.refreshToken);
 
     res.status(201).json({
       message: 'User registered successfully',
-      accessToken: accessToken,
+      accessToken: result.accessToken,
     });
   } catch (error) {
-    // Handle transaction rollback
-    await client?.query('ROLLBACK');
-
     console.error('Error during registration:', error);
     res.status(500).json({ error: 'Server error. Registration failed.' });
-  } finally {
-    client?.release();
   }
 }
 
@@ -125,10 +108,7 @@ function: handleLogin
 It checks the password's validity. If valid, it shows a success message.
 */
 async function handleLogin(req: Request, res: Response): Promise<void> {
-  let client: PoolClient | null = null;
   try {
-    client = await pool.connect();
-
     const { username, password } = req.body;
 
     if (!username || !password) {
@@ -137,18 +117,20 @@ async function handleLogin(req: Request, res: Response): Promise<void> {
     }
 
     const userId = await authenticateUser(username, password);
+
     if (userId !== null) {
       // If the user is authenticated successfully
-      await client.query('BEGIN');
+      const result = await client.$transaction(async (tx: Prisma.TransactionClient) => {
+        const refreshToken = await tokenService.createRefreshToken(userId, tx);
+        return { refreshToken };
+      });
 
-      const refreshToken = await tokenService.createRefreshToken(userId, client);
-      setRefreshTokenCookie(res, refreshToken); // Set the refresh token in a cookie
+      setRefreshTokenCookie(res, result.refreshToken);
 
-      await client.query('COMMIT');
-
+      const accessToken = tokenService.createAccessToken(userId);
       res.status(200).json({
         message: 'Login successful',
-        accessToken: tokenService.createAccessToken(userId),
+        accessToken: accessToken,
       });
       return;
     } else {
@@ -156,12 +138,9 @@ async function handleLogin(req: Request, res: Response): Promise<void> {
       return;
     }
   } catch (error) {
-    await client?.query('ROLLBACK');
     console.error('Error during authentication:', error);
     res.status(500).json({ error: 'Internal server error. Login failed.' });
     return;
-  } finally {
-    client?.release();
   }
 }
 
@@ -202,18 +181,13 @@ async function handleLogout(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    let client: PoolClient | null = null;
     try {
-      client = await pool.connect();
-      await client.query('BEGIN');
-      await tokenService.revokeSpecificRefreshToken(refreshToken, client);
-      await client.query('COMMIT');
+      await client.$transaction(async (tx: Prisma.TransactionClient) => {
+        await tokenService.revokeSpecificRefreshToken(refreshToken, tx);
+      });
     } catch (error) {
-      await client?.query('ROLLBACK');
       console.error('Error during logout token revocation:', error);
       // Still return success since cookie is cleared
-    } finally {
-      client?.release();
     }
 
     res.status(200).json({ message: 'Logout successful' });
@@ -235,10 +209,7 @@ async function handleExpiredAccessToken(req: Request, res: Response): Promise<vo
     return;
   }
 
-  let client: PoolClient | null = null;
-
   try {
-    client = await pool.connect();
     let payload: JwtPayload;
     try {
       payload = tokenService.verifyRefreshToken(refreshToken);
@@ -248,35 +219,35 @@ async function handleExpiredAccessToken(req: Request, res: Response): Promise<vo
     }
 
     const userId = parseInt(payload.sub as string, 10);
-    await client.query('BEGIN');
-    const tokenFound = await tokenService.revokeSpecificRefreshToken(refreshToken, client);
-    if (!tokenFound) {
-      console.warn(
-        `SECURITY ALERT: Unknown refresh token detected for user ${userId}. Revoking all sessions.`
-      );
-      await tokenService.revokeUserRefreshTokens(userId, client);
-      await client.query('COMMIT');
-      res.status(403).json({ error: 'Invalid refresh token.' });
-      return;
-    }
 
-    const newAccessToken = tokenService.createAccessToken(userId);
-    const newRefreshToken = await tokenService.createRefreshToken(userId, client);
-    setRefreshTokenCookie(res, newRefreshToken);
-    await client.query('COMMIT');
+    const result = await client.$transaction(async (tx: Prisma.TransactionClient) => {
+      const tokenFound = await tokenService.revokeSpecificRefreshToken(refreshToken, tx);
+
+      if (!tokenFound) {
+        console.warn(
+          `SECURITY ALERT: Unknown refresh token detected for user ${userId}. Revoking all sessions.`
+        );
+        await tokenService.revokeUserRefreshTokens(userId, tx);
+        res.status(400).json('Invalid refresh token');
+      }
+
+      const newAccessToken = tokenService.createAccessToken(userId);
+      const newRefreshToken = await tokenService.createRefreshToken(userId, tx);
+
+      return { newAccessToken, newRefreshToken };
+    });
+
+    setRefreshTokenCookie(res, result.newRefreshToken);
 
     res.status(200).json({
       message: 'Token refreshed successfully',
-      accessToken: newAccessToken,
+      accessToken: result.newAccessToken,
     });
     return;
   } catch (error) {
-    await client?.query('ROLLBACK');
     console.error('Error during token refresh:', error);
     res.status(500).json({ error: 'Internal server error. Token refresh failed.' });
     return;
-  } finally {
-    client?.release();
   }
 }
 
