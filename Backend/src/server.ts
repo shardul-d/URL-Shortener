@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import logger from './utils/logger.js';
+import morgan from 'morgan';
 import authRoutes from './routes/authRoutes.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import envCheck from './utils/envCheck.js';
@@ -36,10 +37,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
 // Request logging middleware
-app.use((req, _res, next) => {
-  logger.http(`${req.method} ${req.url} - ${req.ip}`);
-  next();
-});
+app.use(morgan('dev'));
 
 // API routes
 app.use('/api/auth', authRoutes);

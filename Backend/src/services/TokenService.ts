@@ -3,16 +3,17 @@ import type { SignOptions, JwtPayload } from 'jsonwebtoken';
 import { Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import jwtConfig from '../config/jwtConfig.js';
+import logger from '../utils/logger.js';
 
 class TokenService {
   async createRefreshToken(userId: number, tx: Prisma.TransactionClient): Promise<string> {
-    const jti = randomUUID();
+    const random_jti = randomUUID();
     const payload = {
       sub: userId,
+      jti: random_jti,
     };
     const options: SignOptions = {
       expiresIn: jwtConfig.refreshTokenExpiresIn,
-      jwtid: jti,
     };
     const refreshToken = jwt.sign(payload, jwtConfig.refreshTokenSecret, options);
 
@@ -20,7 +21,7 @@ class TokenService {
 
     await tx.refresh_tokens.create({
       data: {
-        jti: jti,
+        jti: random_jti,
         user_id: BigInt(userId),
         expires_at: expiresAt,
       },
@@ -73,17 +74,22 @@ class TokenService {
     if (!payload.jti) {
       console.error('Cannot delete token as jti is undefined.');
     }
-    const jti: string = payload.jti!;
-    const userId: number = parseInt(payload.sub!, 10);
+    const payload_jti: string = payload.jti!;
 
-    const result = await tx.refresh_tokens.deleteMany({
-      where: {
-        jti: jti,
-        user_id: BigInt(userId),
-      },
-    });
-
-    return result.count > 0;
+    try {
+      await tx.refresh_tokens.delete({
+        where: {
+          jti: payload_jti,
+        },
+      });
+      return true;
+    } catch (error){
+      if (error instanceof Error && 'code' in error) {
+        if (error.code !== 'P2025') //Getting P2025 would mean record not found, which is a sign of refresh token reuse.
+          logger.error(error);
+      }
+      return false;
+    }
   }
 }
 
