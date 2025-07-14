@@ -9,10 +9,10 @@ class TokenService {
     const jti = randomUUID();
     const payload = {
       sub: userId,
-      jti: jti,
     };
     const options: SignOptions = {
       expiresIn: jwtConfig.refreshTokenExpiresIn,
+      jwtid: jti,
     };
     const refreshToken = jwt.sign(payload, jwtConfig.refreshTokenSecret, options);
 
@@ -69,10 +69,13 @@ class TokenService {
     const payload = jwt.verify(refreshToken, jwtConfig.refreshTokenSecret, {
       ignoreExpiration: true,
     }) as JwtPayload;
-    const jti = payload.jti;
+
+    if (!payload.jti) {
+      console.error('Cannot delete token as jti is undefined.');
+    }
+    const jti: string = payload.jti!;
     const userId: number = parseInt(payload.sub!, 10);
 
-    // Delete the token by JTI and user_id for additional security
     const result = await tx.refresh_tokens.deleteMany({
       where: {
         jti: jti,

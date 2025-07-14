@@ -12,9 +12,13 @@
 .env.test.local
 .env.production.local
 
+#Log files
+*.log
+
 # IDE & OS files
 .vscode/
 .DS_Store
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+/src/generated/prisma
