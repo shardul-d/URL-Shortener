@@ -4,9 +4,10 @@
   "main": "server.js",
   "type": "module",
   "scripts": {
-    "dev": "npx prisma generate && tsc && node --watch dist/server.js",
-    "start": "npm run build && node --watch dist/server.js",
-    "build": "tsc && npx prisma generate",
+    "dev": "npx prisma generate && tsx watch src/server.ts",
+    "build": "npx prisma generate && tsc",
+    "start": "npm run build && node dist/server.js",
+    "typecheck": "tsc --noEmit",
     "format": "prettier --write \"src/**/*.ts\"",
     "check-format": "prettier --check \"src/**/*.ts\"",
     "lint": "eslint \"src/**/*.ts",

@@ -54,22 +54,17 @@ It checks that the username is unique, hashes the password, and adds the new use
 */
 async function handleRegistration(req: Request, res: Response): Promise<void> {
   const { username, password } = req.body;
+  const existingUser = await client.users.findUnique({
+    where: { username },
+    select: { id: true },
+  });
 
-  if (!username || !password) {
-    res.status(400).json({ error: 'Username and password are required' });
+  if (existingUser) {
+    res.status(400).json({ error: 'Username already exists' });
     return;
   }
 
   const result = await client.$transaction(async (tx: Prisma.TransactionClient) => {
-    const existingUser = await tx.users.findUnique({
-      where: { username },
-      select: { id: true },
-    });
-
-    if (existingUser) {
-      throw new Error('Username already exists.');
-    }
-
     const hashed_password: string = await bcrypt.hash(password, authConfig.bcrypt.saltRounds);
 
     const newUser = await tx.users.create({
