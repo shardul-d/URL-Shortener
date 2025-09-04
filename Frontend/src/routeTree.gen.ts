@@ -9,19 +9,19 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as LinksRouteImport } from './routes/links'
 import { Route as DashboardRouteImport } from './routes/dashboard'
-import { Route as CounterRouteImport } from './routes/counter'
 import { Route as AuthRegisterRouteImport } from './routes/auth/register'
 import { Route as AuthLoginRouteImport } from './routes/auth/login'
 
+const LinksRoute = LinksRouteImport.update({
+  id: '/links',
+  path: '/links',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const DashboardRoute = DashboardRouteImport.update({
   id: '/dashboard',
   path: '/dashboard',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const CounterRoute = CounterRouteImport.update({
-  id: '/counter',
-  path: '/counter',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthRegisterRoute = AuthRegisterRouteImport.update({
@@ -36,53 +36,53 @@ const AuthLoginRoute = AuthLoginRouteImport.update({
 } as any)
 
 export interface FileRoutesByFullPath {
-  '/counter': typeof CounterRoute
   '/dashboard': typeof DashboardRoute
+  '/links': typeof LinksRoute
   '/auth/login': typeof AuthLoginRoute
   '/auth/register': typeof AuthRegisterRoute
 }
 export interface FileRoutesByTo {
-  '/counter': typeof CounterRoute
   '/dashboard': typeof DashboardRoute
+  '/links': typeof LinksRoute
   '/auth/login': typeof AuthLoginRoute
   '/auth/register': typeof AuthRegisterRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  '/counter': typeof CounterRoute
   '/dashboard': typeof DashboardRoute
+  '/links': typeof LinksRoute
   '/auth/login': typeof AuthLoginRoute
   '/auth/register': typeof AuthRegisterRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/counter' | '/dashboard' | '/auth/login' | '/auth/register'
+  fullPaths: '/dashboard' | '/links' | '/auth/login' | '/auth/register'
   fileRoutesByTo: FileRoutesByTo
-  to: '/counter' | '/dashboard' | '/auth/login' | '/auth/register'
-  id: '__root__' | '/counter' | '/dashboard' | '/auth/login' | '/auth/register'
+  to: '/dashboard' | '/links' | '/auth/login' | '/auth/register'
+  id: '__root__' | '/dashboard' | '/links' | '/auth/login' | '/auth/register'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-  CounterRoute: typeof CounterRoute
   DashboardRoute: typeof DashboardRoute
+  LinksRoute: typeof LinksRoute
   AuthLoginRoute: typeof AuthLoginRoute
   AuthRegisterRoute: typeof AuthRegisterRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/links': {
+      id: '/links'
+      path: '/links'
+      fullPath: '/links'
+      preLoaderRoute: typeof LinksRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/dashboard': {
       id: '/dashboard'
       path: '/dashboard'
       fullPath: '/dashboard'
       preLoaderRoute: typeof DashboardRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/counter': {
-      id: '/counter'
-      path: '/counter'
-      fullPath: '/counter'
-      preLoaderRoute: typeof CounterRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/auth/register': {
@@ -103,8 +103,8 @@ declare module '@tanstack/react-router' {
 }
 
 const rootRouteChildren: RootRouteChildren = {
-  CounterRoute: CounterRoute,
   DashboardRoute: DashboardRoute,
+  LinksRoute: LinksRoute,
   AuthLoginRoute: AuthLoginRoute,
   AuthRegisterRoute: AuthRegisterRoute,
 }

@@ -29,7 +29,9 @@
     "sourceMap": true,
 
     /* If your code doesn't run in the DOM: */
-    "lib": ["es2024", "ESNext.Array", "ESNext.Collection", "ESNext.Iterator"]
+    "lib": ["es2024", "ESNext.Array", "ESNext.Collection", "ESNext.Iterator"],
+
+    "typeRoots": ["./types", "./node_modules/@types"]
   },
   "include": ["src/**/*"], // It's good practice to specify what to compile
   "exclude": ["node_modules"]

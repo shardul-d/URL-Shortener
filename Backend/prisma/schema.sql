@@ -33,6 +33,8 @@ CREATE TABLE clicks(
 );
 
 CREATE INDEX idx_clicks_on_url ON clicks(short_url, click_time);
+CREATE INDEX idx_clicks_shorturl_country ON clicks(short_url, country_code);
+
 
 CREATE TABLE refresh_tokens (
     jti VARCHAR(255) PRIMARY KEY,

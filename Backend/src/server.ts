@@ -1,17 +1,20 @@
-import express from 'express';
 import { PrismaClient } from '@prisma/client';
-import cors from 'cors';
 import cookieParser from 'cookie-parser';
-import logger from './utils/logger.js';
+import cors from 'cors';
+import express from 'express';
 import morgan from 'morgan';
-import authRoutes from './routes/authRoutes.js';
+import { handleRedirect } from './controllers/redirectController.js';
 import { errorHandler } from './middleware/errorHandler.js';
+import authRoutes from './routes/authRoutes.js';
+import linkRoutes from './routes/linkRoutes.js';
+import GeoService from './services/GeolocationService.js';
 import envCheck from './utils/envCheck.js';
+import logger from './utils/logger.js';
 
 try {
   envCheck();
 } catch (err) {
-  console.error(err);
+  logger.error(err);
   process.exit(1);
 }
 
@@ -19,53 +22,59 @@ const app = express();
 
 const client = new PrismaClient();
 
+const geoService = new GeoService();
+await geoService.initialize();
+
 // CORS configuration
 app.use(
   cors({
     origin: process.env['FRONTEND_URL'] || 'http://localhost:5173',
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
   })
 );
 
-// Body parsing middleware
+// Parsing
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
-// Cookie parsing (ESSENTIAL for your auth system)
 app.use(cookieParser());
 
-// Request logging middleware
-app.use(morgan('dev'));
+// Request logging
+app.use(morgan('dev')); 
 
 // API routes
 app.use('/api/auth', authRoutes);
+app.use('/api/links', linkRoutes);
+app.use('/:short_url', handleRedirect);
 
 // 404 handler
 app.use('/*path', (_req, res) => {
-  res.status(404).json({ error: 'Route not found LOL' });
+  res.status(404).json({ error: 'Route not found' });
 });
 
 // Error handling middleware (must be last)
 app.use(errorHandler);
 
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  logger.info('SIGTERM received, shutting down gracefully');
-  await client.$disconnect();
-  process.exit(0);
-});
+function handleGracefulShutdown() {
+  client
+    .$disconnect()
+    .then(() => {
+      console.log('Database disconnected gracefully');
+      process.exit(0);
+    })
+    .catch((error: unknown) => {
+      console.error('Error disconnecting from database:', error);
+      process.exit(1);
+    });
+}
 
-process.on('SIGINT', async () => {
-  logger.info('SIGINT received, shutting down gracefully');
-  await client.$disconnect();
-  process.exit(0);
-});
+process.on('SIGTERM', () => handleGracefulShutdown());
+process.on('SIGINT', () => handleGracefulShutdown());
 
-const PORT = process.env['PORT'] || 3000;
+const PORT = process.env['PORT'] || '3000';
 app.listen(PORT, () => {
   logger.info(`Server running on port ${PORT}`);
 });
 
-export { client };
+export { client, geoService };

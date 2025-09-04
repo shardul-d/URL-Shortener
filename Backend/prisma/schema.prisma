@@ -15,6 +15,7 @@ model clicks {
   urls         urls      @relation(fields: [short_url], references: [short_url], onDelete: Cascade, onUpdate: NoAction, map: "fk_short_url")
 
   @@index([short_url, click_time(sort: Desc)], map: "idx_clicks_on_url_desc")
+  @@index([short_url, country_code], map: "idx_clicks_shorturl_country")
 }
 
 model refresh_tokens {

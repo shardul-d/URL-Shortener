@@ -7,6 +7,7 @@ import { routeTree } from './routeTree.gen';
 
 export const api = axios.create({
   baseURL: 'http://localhost:3000/api',
+  withCredentials: true, // Enable sending cookies with requests
 });
 
 // Create a new router instance
